@@ -49,3 +49,32 @@ def log_inventory_transaction(inventory_id: int, change_amount: int, reason: str
         return "Transaction logged."
     finally:
         conn.close()
+
+
+def resolve_inventory_ids(material_names: list[str]) -> list[dict]:
+    """
+    Given a list of material name strings, returns matching inventory rows as:
+    [{ "inventory_id": int, "name": str, "quantity": int }]
+    Unmatched names are silently skipped.
+    """
+    if not material_names:
+        return []
+    conn = get_connection()
+    try:
+        results = []
+        with conn.cursor() as cur:
+            for name in material_names:
+                cur.execute(
+                    "SELECT id, name, quantity FROM inventory WHERE name ILIKE %s LIMIT 1",
+                    (f"%{name}%",)
+                )
+                row = cur.fetchone()
+                if row:
+                    results.append({
+                        "inventory_id": row[0],
+                        "name": row[1],
+                        "quantity": row[2],
+                    })
+        return results
+    finally:
+        conn.close()

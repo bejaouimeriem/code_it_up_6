@@ -20,6 +20,27 @@ def save_project(name: str, description: str, priority: int = 1) -> int:
         conn.close()
 
 
+def save_project_requirements(project_id: int, requirements: list[dict]) -> int:
+    """
+    Insert rows into project_requirements.
+    Each requirement dict: { "inventory_id": int, "required_quantity": int }
+    Returns count of rows inserted.
+    """
+    if not requirements:
+        return 0
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO project_requirements (project_id, inventory_id, required_quantity) VALUES (%s, %s, %s)",
+                [(project_id, r["inventory_id"], r["required_quantity"]) for r in requirements]
+            )
+        conn.commit()
+        return len(requirements)
+    finally:
+        conn.close()
+
+
 def get_all_projects() -> list:
     """Fetch all projects."""
     conn = get_connection()
