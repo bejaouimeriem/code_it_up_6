@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --color-babyPink: #ffd1dc;
+  --color-babyBlue: #bae1ff;
+  --color-babyYellow: #fff7b3;
+  --color-mintGreen: #a8e6cf;
+  --color-oceanDeep: #1a3a5c;
+  --color-oceanMid: #2d6a9f;
+  --color-oceanTeal: #7ec8e3;
+  --color-coralPink: #ffaaa5;
+  --color-sandyGold: #ffd700;
+  --color-seafoam: #b5ead7;
+  --color-kelp: #48c9b0;
+  --color-spongeBob: #f8e71c;
+  --color-sand: #f5e6ca;
+}
