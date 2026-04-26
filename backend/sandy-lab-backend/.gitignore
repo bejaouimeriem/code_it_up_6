@@ -1,0 +1,30 @@
+# Node.js / NestJS
+node_modules/
+dist/
+build/
+.env
+.env.*
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json   # optionnel, mais souvent on le garde. Si tu veux l’ignorer, décommente
+# yarn.lock
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Temp files
+*.tmp
+*.temp

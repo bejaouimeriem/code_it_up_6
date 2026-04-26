@@ -1,0 +1,66 @@
+version: '3.8'
+name: codeitup-sandy-lab
+
+services:
+  sandy-db:
+    image: all4n1/codeitup-postgres:latest
+    container_name: codeitup-sandy-lab
+    environment:
+      POSTGRES_DB: sandy_lab
+      POSTGRES_USER: sandy
+      POSTGRES_PASSWORD: sandy123
+    ports:
+      - "5433:5432"
+    volumes:
+      - sandy-db-data:/var/lib/postgresql/data
+    networks:
+      - codeitup-network
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: codeitup-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: sandy@bikini-bottom.com
+      PGADMIN_DEFAULT_PASSWORD: sandy123
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    depends_on:
+      - sandy-db
+    networks:
+      - codeitup-network
+    restart: unless-stopped
+
+  sandy-backend:
+    build: ./sandy-lab-backend          # chemin vers ton dossier backend (où se trouve le Dockerfile)
+    container_name: codeitup-sandy-backend
+    ports:
+      - "3000:3000"                 # expose ton API sur localhost:3000
+    environment:
+      # Ces variables seront lues par NestJS (via @nestjs/config ou process.env)
+      NODE_ENV: development
+      DB_HOST: sandy-db             # nom du service PostgreSQL
+      DB_PORT: 5432                 # port interne du conteneur PostgreSQL
+      DB_USER: sandy
+      DB_PASSWORD: sandy123
+      DB_NAME: sandy_lab
+      # Si tu utilises TypeORM, tu peux passer l'URL complète
+      DATABASE_URL: postgresql://sandy:sandy123@sandy-db:5432/sandy_lab
+    depends_on:
+      - sandy-db
+    networks:
+      - codeitup-network
+    restart: unless-stopped
+
+volumes:
+  sandy-db-data:
+    name: codeitup-sandy-db-data
+  pgadmin-data:
+    name: codeitup-pgadmin-data
+
+networks:
+  codeitup-network:
+    driver: bridge
+    name: codeitup-network
