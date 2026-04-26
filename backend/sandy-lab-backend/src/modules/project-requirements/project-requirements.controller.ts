@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import { Controller, Get, Post, Body, Patch, Param, Delete, HttpCode, HttpStatus } from '@nestjs/common';
 import { ProjectRequirementsService } from './project-requirements.service';
 import { CreateProjectRequirementDto } from './dto/requirement.dto';
 import { UpdateProjectRequirementDto } from './dto/update-project-requirement.dto';
@@ -8,6 +8,7 @@ export class ProjectRequirementsController {
   constructor(private readonly projectRequirementsService: ProjectRequirementsService) {}
 
   @Post()
+  @HttpCode(HttpStatus.CREATED)
   create(@Body() createProjectRequirementDto: CreateProjectRequirementDto) {
     return this.projectRequirementsService.create(createProjectRequirementDto);
   }
@@ -28,6 +29,7 @@ export class ProjectRequirementsController {
   }
 
   @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
   remove(@Param('id') id: string) {
     return this.projectRequirementsService.remove(+id);
   }

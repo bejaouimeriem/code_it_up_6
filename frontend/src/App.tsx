@@ -1,13 +1,13 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { api, ApiProject, ApiInventory, AiLog, AiTask } from "./api";
+import { api, ApiProject, ApiInventory, AiLog, AiTask, ApiTransaction, ApiRequirement } from "./api";
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 type Priority = "high" | "med" | "low";
 type ProjectStatus = "planned" | "ongoing" | "completed";
 type AgentKey = "research" | "inventory" | "database";
 type AgentStatus = "idle" | "running" | "done" | "skipped";
-type Page = "dashboard" | "experience" | "projects" | "inventory" | "logs" | "experiments";
-type ModalType = "proj" | "inv" | "editInv" | "exp" | "editExp" | "experiment" | null;
+type Page = "dashboard" | "transactions" | "projects" | "inventory" | "logs" | "experiments";
+type ModalType = "proj" | "inv" | "editInv" | "exp" | "editExp" | "experiment" | "projectDetail" | null;
 
 interface Project {
   id: number;
@@ -40,15 +40,6 @@ interface LogEntry {
   time: string;
 }
 
-interface Experience {
-  id: number;
-  title: string;
-  role: string;
-  period: string;
-  desc: string;
-  icon: string;
-}
-
 interface Experiment {
   id: number;
   projectId: number;
@@ -59,14 +50,16 @@ interface Experiment {
   usedResources?: { inventoryId: number; quantity: number; reason?: string }[];
 }
 
-// ─── STATIC MOCK (experience seulement — pas de table backend) ─────────────
-const INIT_EXPERIENCE: Experience[] = [
-  { id: 1, title: "Treedome Marine Lab", role: "Lead Scientist & Founder", period: "2018 – Present", desc: "Founded and run an underwater air-dome lab in Bikini Bottom studying marine biology, kelp ecosystems, and coral reef dynamics.", icon: "🌳" },
-  { id: 2, title: "Texas A&M University", role: "Graduate Researcher — Marine Biology", period: "2014 – 2018", desc: "Specialized in deep-sea pressure adaptations, karate-based stress relief studies, and robotic ocean exploration.", icon: "🤠" },
-  { id: 3, title: "Krusty Krab", role: "Food Science Advisor", period: "2016 – 2020", desc: "Consulted on Krabby Patty nutritional composition, seaweed-based ingredient analysis, and quality control.", icon: "🍔" },
-  { id: 4, title: "Bikini Bottom Karate Club", role: "Head Instructor", period: "2015 – Present", desc: "Teaching karate to local marine life — promoting balance, focus, and discipline through the art of underwater martial arts.", icon: "🥋" },
-  { id: 5, title: "SpongeBob & Patrick Research", role: "Co-Principal Investigator", period: "2019 – 2023", desc: "Joint research with SpongeBob SquarePants on jellyfishing behavioral patterns and bubble-blowing fluid dynamics.", icon: "🫧" },
-];
+interface RequirementRow {
+  inventoryId: number;
+  requiredQuantity: number;
+}
+
+interface UsedResourceRow {
+  inventoryId: number;
+  quantity: number;
+  reason: string;
+}
 
 const INIT_LOGS: LogEntry[] = [
   { id: 1, agent: "system",    text: "Sandy's Lab AI initialized — Treedome mode active 🌊", time: "09:00" },
@@ -80,14 +73,12 @@ const PRIORITY_MAP: Record<number, Priority> = { 3: "high", 2: "med", 1: "low" }
 const PRIORITY_TO_NUM: Record<Priority, number> = { high: 3, med: 2, low: 1 };
 const PROJECT_ICONS = ["🪸","🍔","🪼","💧","🌿","🔬","🧬","⭐","🫧","🦑","🐡","🧪"];
 
-// ─── AGENT SEQUENCES ─────────────────────────────────────────────────────────
 const AGENT_SEQUENCES: Record<AgentKey, string[]> = {
   research:  ["🔬 Initiating oceanic web search protocol...", "📡 Querying Bikini Bottom knowledge base...", "🪸 Found relevant marine science sources", "🧪 Synthesizing research results...", "Research report complete ✓"],
   inventory: ["📦 Scanning Treedome inventory database...", "🔍 Checking stock levels for all materials...", "📋 Generating feasibility report...", "Inventory report ready ✓"],
   database:  ["🗄️ Connecting to sandy_lab PostgreSQL...", "✅ Running CRUD validation on all tables...", "📝 Logging task metadata to ai_actions_log...", "💾 Updating records...", "Database sync complete ✓"],
 };
 
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
 function nowTime(): string {
   const d = new Date();
   return `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`;
@@ -173,10 +164,10 @@ function AgentText({ agent }: { agent: string }) {
   return <span className={`text-[10px] font-black ${map[agent]||map.system}`}>{agent.toUpperCase()} </span>;
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: React.ReactNode; wide?: boolean }) {
   return (
     <div className="fixed inset-0 bg-cyan-950/40 z-50 flex items-center justify-center backdrop-blur-sm px-4" onClick={onClose}>
-      <div className="bg-gradient-to-br from-white via-sky-50/60 to-pink-50/40 border-2 border-sky-200/70 rounded-3xl p-5 md:p-6 w-full max-w-md shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div className={`bg-gradient-to-br from-white via-sky-50/60 to-pink-50/40 border-2 border-sky-200/70 rounded-3xl p-5 md:p-6 w-full ${wide ? "max-w-2xl" : "max-w-md"} shadow-2xl max-h-[90vh] overflow-y-auto`} onClick={(e) => e.stopPropagation()}>
         <div className="text-[17px] font-black text-cyan-950 mb-5">{title}</div>
         {children}
       </div>
@@ -210,6 +201,7 @@ export default function App() {
   const [promptText, setPromptText] = useState("");
   const [running, setRunning] = useState(false);
   const [resultText, setResultText] = useState<string | null>(null);
+  const [resultExpanded, setResultExpanded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Data states
@@ -218,8 +210,16 @@ export default function App() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>(INIT_LOGS);
   const [aiTasks, setAiTasks] = useState<AiTask[]>([]);
-  const [experiences, setExperiences] = useState<Experience[]>(INIT_EXPERIENCE);
   const [aiOnline, setAiOnline] = useState<boolean | null>(null);
+
+  // Transactions
+  const [transactions, setTransactions] = useState<ApiTransaction[]>([]);
+  const [loadingTransactions, setLoadingTransactions] = useState(false);
+
+  // Selected project for detail modal
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [selectedProjectRequirements, setSelectedProjectRequirements] = useState<ApiRequirement[]>([]);
+  const [loadingRequirements, setLoadingRequirements] = useState(false);
 
   // Loading states
   const [loadingProjects, setLoadingProjects] = useState(false);
@@ -235,6 +235,9 @@ export default function App() {
 
   const [modal, setModal] = useState<ModalType>(null);
   const [modalForm, setModalForm] = useState<Record<string, any>>({});
+  // Requirements rows in the new project form
+  const [requirementRows, setRequirementRows] = useState<RequirementRow[]>([]);
+  const [usedResourceRows, setUsedResourceRows] = useState<UsedResourceRow[]>([]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
 
@@ -245,6 +248,7 @@ export default function App() {
   const [invSearch, setInvSearch] = useState("");
   const [invCat, setInvCat] = useState<string>("all");
   const [invStock, setInvStock] = useState<"all"|"low"|"ok"|"out">("all");
+  const [txSearch, setTxSearch] = useState("");
 
   // ── Close sidebar on outside click ────────────────────────────────────
   useEffect(() => {
@@ -325,6 +329,29 @@ export default function App() {
     } catch { /* silent */ }
   }, []);
 
+  const fetchTransactions = useCallback(async () => {
+    setLoadingTransactions(true);
+    try {
+      // Fetch transactions for all inventory items
+      const invData = await api.inventory.list();
+      const allTx: ApiTransaction[] = [];
+      await Promise.allSettled(
+        invData.map(async (item) => {
+          try {
+            const txs = await api.inventory.transactions(item.id);
+            allTx.push(...txs);
+          } catch { /* skip */ }
+        })
+      );
+      allTx.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      setTransactions(allTx);
+    } catch (e: any) {
+      addLog("system", `⚠️ Could not load transactions: ${e.message}`);
+    } finally {
+      setLoadingTransactions(false);
+    }
+  }, [addLog]);
+
   const checkAiHealth = useCallback(async () => {
     try {
       await api.ai.health();
@@ -346,10 +373,11 @@ export default function App() {
 
   // ── Refresh when page changes ────────────────────────────────────────
   useEffect(() => {
-    if (page === "projects")    fetchProjects();
-    if (page === "inventory")   fetchInventory();
-    if (page === "experiments") fetchExperiments();
-    if (page === "logs")        { fetchLogs(); fetchTasks(); }
+    if (page === "projects")      fetchProjects();
+    if (page === "inventory")     fetchInventory();
+    if (page === "experiments")   fetchExperiments();
+    if (page === "transactions")  { fetchTransactions(); fetchInventory(); }
+    if (page === "logs")          { fetchLogs(); fetchTasks(); }
   }, [page]);
 
   // ── Run agent ────────────────────────────────────────────────────────
@@ -359,19 +387,18 @@ export default function App() {
     setPromptText(taskText);
     setRunning(true);
     setResultText(null);
+    setResultExpanded(false);
     setError(null);
 
     addLog("system", `New task: "${taskText.substring(0, 60)}..."`);
     addLog("planner", "Routing to agents...");
 
-    // Reset agents to idle
     setAgents({
       research:  { status: "idle", action: "Standby...", out: "" },
       inventory: { status: "idle", action: "Standby...", out: "" },
       database:  { status: "idle", action: "Standby...", out: "" },
     });
 
-    // Animate all three while waiting for real API
     const animateAll = async () => {
       const keys: AgentKey[] = ["research", "inventory", "database"];
       for (const key of keys) {
@@ -384,7 +411,6 @@ export default function App() {
       }
     };
 
-    // Run animation + real API call in parallel
     const [result] = await Promise.allSettled([
       api.ai.run(taskText),
       animateAll(),
@@ -394,7 +420,6 @@ export default function App() {
       const data = result.value;
       const activePlan = data.plan as AgentKey[];
 
-      // Mark agents done/skipped based on real plan
       const allKeys: AgentKey[] = ["research", "inventory", "database"];
       const finalAgents: Record<AgentKey, Agent> = { research: agents.research, inventory: agents.inventory, database: agents.database };
       for (const key of allKeys) {
@@ -408,21 +433,18 @@ export default function App() {
       }
       setAgents(finalAgents);
 
-      // Build result text from real data
-      const parts = ["✅ Sandy's AI system completed your task!"];
-      if (data.research) parts.push(`🔍 ${data.research.slice(0, 200)}...`);
-      if (data.inventory) parts.push(`📦 ${data.inventory.slice(0, 200)}...`);
-      if (data.database) parts.push(`🗄️ ${data.database.slice(0, 200)}...`);
-      setResultText(parts.join(" "));
+      const parts: string[] = ["✅ Sandy's AI system completed your task!\n\n"];
+      if (data.research) parts.push(`🔍 Research:\n${data.research}\n\n`);
+      if (data.inventory) parts.push(`📦 Inventory:\n${data.inventory}\n\n`);
+      if (data.database) parts.push(`🗄️ Database:\n${data.database}`);
+      setResultText(parts.join(""));
       addLog("system", "All activated agents completed — task finalized 🌊");
 
-      // Refresh data after agent run
       await Promise.all([fetchProjects(), fetchInventory(), fetchLogs(), fetchTasks()]);
     } else {
       const errMsg = result.status === "rejected" ? result.reason?.message : "AI service error";
       setError(`Agent error: ${errMsg}. Running in demo mode.`);
 
-      // Fallback: mark all as done with demo data
       const demoAgents: Record<AgentKey, Agent> = {
         research:  { status: "done", action: AGENT_SEQUENCES.research.at(-1)!,  out: "Demo mode — AI service offline 🫧" },
         inventory: { status: "done", action: AGENT_SEQUENCES.inventory.at(-1)!, out: "Demo mode — AI service offline 🫧" },
@@ -439,17 +461,32 @@ export default function App() {
   // ── Project CRUD ─────────────────────────────────────────────────────
   const openProjModal = () => {
     setModalForm({ name: "", desc: "", priority: "med", status: "planned" });
+    setRequirementRows([]);
     setModal("proj");
   };
+
   const saveProj = async () => {
     if (!String(modalForm.name).trim()) return;
     try {
-      await api.projects.create({ name: modalForm.name, description: modalForm.desc, status: modalForm.status, priority: PRIORITY_TO_NUM[modalForm.priority as Priority] });
+      const created = await api.projects.create({ name: modalForm.name, description: modalForm.desc, status: modalForm.status, priority: PRIORITY_TO_NUM[modalForm.priority as Priority] });
       addLog("database", `Project created: ${modalForm.name}`);
+
+      // Save requirements
+      for (const row of requirementRows) {
+        if (row.inventoryId && row.requiredQuantity > 0) {
+          try {
+            await api.requirements.create({ projectId: created.id, inventoryId: row.inventoryId, requiredQuantity: row.requiredQuantity });
+          } catch (e: any) {
+            addLog("database", `⚠️ Requirement failed: ${e.message}`);
+          }
+        }
+      }
+
       setModal(null);
       fetchProjects();
     } catch (e: any) { setError(e.message); }
   };
+
   const cycleProjectStatus = async (id: number) => {
     const order: ProjectStatus[] = ["planned", "ongoing", "completed"];
     const project = projects.find((p) => p.id === id);
@@ -461,6 +498,7 @@ export default function App() {
       addLog("database", `Project status: ${project.name} → ${next}`);
     } catch (e: any) { setError(e.message); }
   };
+
   const deleteProject = async (id: number) => {
     const project = projects.find((p) => p.id === id);
     try {
@@ -468,6 +506,26 @@ export default function App() {
       setProjects((v) => v.filter((p) => p.id !== id));
       if (project) addLog("database", `Project deleted: ${project.name}`);
     } catch (e: any) { setError(e.message); }
+  };
+
+  // ── Open Project Detail Modal ────────────────────────────────────────
+  const openProjectDetail = async (project: Project) => {
+    setSelectedProject(project);
+    setModal("projectDetail");
+    setLoadingRequirements(true);
+    setSelectedProjectRequirements([]);
+    try {
+      // Fetch requirements: GET /project-requirements?projectId=id
+      // Since the API only has a generic list endpoint, we fetch all and filter
+      // Or use the project's requirements if they come embedded
+      const allProjects = await api.projects.list();
+      const found = allProjects.find((p) => p.id === project.id);
+      setSelectedProjectRequirements(found?.requirements || []);
+    } catch (e: any) {
+      addLog("system", `⚠️ Could not load requirements: ${e.message}`);
+    } finally {
+      setLoadingRequirements(false);
+    }
   };
 
   // ── Inventory CRUD ────────────────────────────────────────────────────
@@ -496,7 +554,6 @@ export default function App() {
   };
   const deleteInv = async (id: number) => {
     const item = inventory.find((i) => i.id === id);
-    // No delete endpoint — update to qty 0 as workaround or just local
     setInventory((v) => v.filter((i) => i.id !== id));
     if (item) addLog("database", `Item removed: ${item.name}`);
   };
@@ -521,6 +578,7 @@ export default function App() {
   // ── Experiment CRUD ────────────────────────────────────────────────────
   const openExpModal = () => {
     setModalForm({ projectId: projects[0]?.id || "", result: "", success: true, notes: "", resources: [] });
+    setUsedResourceRows([]);
     setModal("experiment");
   };
   const saveExperiment = async () => {
@@ -530,7 +588,9 @@ export default function App() {
         result: modalForm.result,
         success: modalForm.success === true || modalForm.success === "true",
         notes: modalForm.notes,
-        usedResources: modalForm.resources || [],
+        usedResources: usedResourceRows
+          .filter((r) => r.inventoryId && r.quantity > 0)
+          .map((r) => ({ inventoryId: r.inventoryId, quantity: r.quantity, reason: r.reason || undefined })),
       });
       addLog("database", `Experiment logged for project #${modalForm.projectId}`);
       setModal(null);
@@ -539,24 +599,26 @@ export default function App() {
     } catch (e: any) { setError(e.message); }
   };
 
-  // ── Experience CRUD (local only) ────────────────────────────────────
-  const openExpirenceModal = () => { setModalForm({ title: "", role: "", period: "", desc: "", icon: "⭐" }); setModal("exp"); };
-  const openEditExp = (exp: Experience) => { setModalForm({ ...exp }); setModal("editExp"); };
-  const deleteExp = (id: number) => {
-    const e = experiences.find((x) => x.id === id);
-    setExperiences((v) => v.filter((x) => x.id !== id));
-    if (e) addLog("database", `Experience removed: ${e.title}`);
+  // ── Requirement rows helpers ─────────────────────────────────────────
+  const addRequirementRow = () => {
+    setRequirementRows((prev) => [...prev, { inventoryId: inventory[0]?.id || 0, requiredQuantity: 1 }]);
   };
-  const saveExp = () => {
-    if (!String(modalForm.title).trim()) return;
-    setExperiences((v) => [...v, { ...modalForm, id: Date.now() } as Experience]);
-    addLog("database", `Experience added: ${modalForm.title}`);
-    setModal(null);
+  const updateRequirementRow = (index: number, field: keyof RequirementRow, value: number) => {
+    setRequirementRows((prev) => prev.map((r, i) => i === index ? { ...r, [field]: value } : r));
   };
-  const saveEditExp = () => {
-    setExperiences((v) => v.map((x) => x.id === modalForm.id ? ({ ...modalForm } as Experience) : x));
-    addLog("database", `Experience updated: ${modalForm.title}`);
-    setModal(null);
+  const removeRequirementRow = (index: number) => {
+    setRequirementRows((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // ── Used resource rows helpers (experiment modal) ────────────────────
+  const addUsedResourceRow = () => {
+    setUsedResourceRows((prev) => [...prev, { inventoryId: inventory[0]?.id || 0, quantity: 1, reason: "" }]);
+  };
+  const updateUsedResourceRow = (index: number, field: keyof UsedResourceRow, value: number | string) => {
+    setUsedResourceRows((prev) => prev.map((r, i) => i === index ? { ...r, [field]: value } : r));
+  };
+  const removeUsedResourceRow = (index: number) => {
+    setUsedResourceRows((prev) => prev.filter((_, i) => i !== index));
   };
 
   // ── Derived ──────────────────────────────────────────────────────────
@@ -577,17 +639,25 @@ export default function App() {
     if (invSearch.trim()) { const q = invSearch.toLowerCase(); if (!i.name.toLowerCase().includes(q)) return false; }
     return true;
   });
+  const filteredTransactions = transactions.filter((tx) => {
+    if (!txSearch.trim()) return true;
+    const q = txSearch.toLowerCase();
+    const invItem = inventory.find((i) => i.id === tx.inventoryId);
+    return (invItem?.name.toLowerCase().includes(q)) || tx.reason?.toLowerCase().includes(q);
+  });
 
   const navItems = [
-    { key: "dashboard"   as Page, icon: "🏠", label: "Dashboard" },
-    { key: "experience"  as Page, icon: "⭐", label: "Experience", badge: null },
-    { key: "projects"    as Page, icon: "🧪", label: "Projects",   badge: activeProj || null },
-    { key: "inventory"   as Page, icon: "📦", label: "Inventory",  badge: lowStock || null },
-    { key: "experiments" as Page, icon: "🔬", label: "Experiments", badge: null },
-    { key: "logs"        as Page, icon: "📋", label: "Logs" },
+    { key: "dashboard"    as Page, icon: "🏠", label: "Dashboard" },
+    { key: "transactions" as Page, icon: "📊", label: "Transactions", badge: null },
+    { key: "projects"     as Page, icon: "🧪", label: "Projects",   badge: activeProj || null },
+    { key: "inventory"    as Page, icon: "📦", label: "Inventory",  badge: lowStock || null },
+    { key: "experiments"  as Page, icon: "🔬", label: "Experiments", badge: null },
+    { key: "logs"         as Page, icon: "📋", label: "Logs" },
   ];
   const agentKeys: AgentKey[] = ["research", "inventory", "database"];
   const handleNavClick = (key: Page) => { setPage(key); setSidebarOpen(false); };
+
+  const RESULT_PREVIEW_LEN = 200;
 
   // ── RENDER ────────────────────────────────────────────────────────────
   return (
@@ -618,16 +688,156 @@ export default function App() {
 
       {/* ── MODALS ──────────────────────────────────────────────────────── */}
       {modal === "proj" && (
-        <Modal title="🧪 New Research Project" onClose={() => setModal(null)}>
+        <Modal title="🧪 New Research Project" onClose={() => setModal(null)} wide>
           <MField label="Project Name"><input className={inputCls} placeholder="Enter name..." value={modalForm.name} onChange={(e) => setModalForm({ ...modalForm, name: e.target.value })} /></MField>
           <MField label="Description"><input className={inputCls} placeholder="Short description..." value={modalForm.desc} onChange={(e) => setModalForm({ ...modalForm, desc: e.target.value })} /></MField>
           <div className="grid grid-cols-2 gap-3">
             <MField label="Priority"><select className={selectCls} value={modalForm.priority} onChange={(e) => setModalForm({ ...modalForm, priority: e.target.value })}><option value="high">High</option><option value="med">Medium</option><option value="low">Low</option></select></MField>
             <MField label="Status"><select className={selectCls} value={modalForm.status} onChange={(e) => setModalForm({ ...modalForm, status: e.target.value })}><option value="planned">Planned</option><option value="ongoing">Ongoing</option><option value="completed">Completed</option></select></MField>
           </div>
+
+          {/* Requirements Section */}
+          <div className="mb-3">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">📦 Required Inventory Items</label>
+              <button
+                onClick={addRequirementRow}
+                className="text-[10px] font-black bg-sky-100 border-2 border-sky-200 text-sky-700 px-2.5 py-1 rounded-lg hover:bg-sky-200 transition-colors"
+              >+ Add Item</button>
+            </div>
+            {requirementRows.length === 0 ? (
+              <div className="text-center py-4 text-slate-300 text-[11px] border-2 border-dashed border-sky-200 rounded-xl">
+                No requirements yet — tap "+ Add Item" to add inventory requirements
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {requirementRows.map((row, i) => {
+                  const selectedItem = inventory.find((inv) => inv.id === row.inventoryId);
+                  return (
+                    <div key={i} className="flex items-center gap-2 bg-sky-50/60 border-2 border-sky-200/60 rounded-xl px-3 py-2">
+                      <select
+                        className="flex-1 bg-white border-2 border-sky-200 rounded-lg px-2 py-1.5 text-[12px] text-cyan-950 font-semibold outline-none cursor-pointer focus:border-teal-400"
+                        value={row.inventoryId}
+                        onChange={(e) => updateRequirementRow(i, "inventoryId", Number(e.target.value))}
+                      >
+                        {inventory.map((inv) => (
+                          <option key={inv.id} value={inv.id}>{inv.name} ({inv.unit}) — stock: {inv.qty}</option>
+                        ))}
+                      </select>
+                      <div className="flex items-center gap-1 flex-shrink-0">
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-20 bg-white border-2 border-sky-200 rounded-lg px-2 py-1.5 text-[12px] text-cyan-950 font-semibold outline-none focus:border-teal-400 text-center"
+                          value={row.requiredQuantity}
+                          onChange={(e) => updateRequirementRow(i, "requiredQuantity", Number(e.target.value))}
+                        />
+                        <span className="text-[10px] text-slate-400 font-black">{selectedItem?.unit || "pcs"}</span>
+                      </div>
+                      <button onClick={() => removeRequirementRow(i)} className="text-[10px] font-black text-red-400 hover:text-red-600 px-1.5 py-1 rounded-lg hover:bg-red-50 transition-colors flex-shrink-0">✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-2 mt-4">
             <button onClick={() => setModal(null)} className="flex-1 py-2.5 rounded-xl bg-white border-2 border-sky-200 text-slate-400 text-sm font-black hover:bg-sky-50">Cancel</button>
             <button onClick={saveProj} className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-sky-300 to-teal-400 text-cyan-950 text-sm font-black hover:opacity-90">Create Project</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Project Detail Modal */}
+      {modal === "projectDetail" && selectedProject && (
+        <Modal title={`${selectedProject.icon} ${selectedProject.name}`} onClose={() => setModal(null)} wide>
+          <div className="space-y-4">
+            {/* Basic Info */}
+            <div className="bg-sky-50/60 border-2 border-sky-200/60 rounded-2xl p-4">
+              <div className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-2">Project Info</div>
+              <p className="text-[13px] text-slate-600 leading-relaxed mb-3">{selectedProject.desc || "No description provided."}</p>
+              <div className="flex flex-wrap gap-2">
+                <PriBadge priority={selectedProject.priority} />
+                <StBadge status={selectedProject.status} />
+                <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">ID #{selectedProject.id}</span>
+              </div>
+            </div>
+
+            {/* Requirements */}
+            <div>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="text-[13px] font-black text-cyan-950">📦 Inventory Requirements</div>
+                {loadingRequirements && <Spinner />}
+              </div>
+              {loadingRequirements ? (
+                <div className="text-center py-6 text-slate-400 text-[12px] bg-white/60 rounded-xl border-2 border-dashed border-sky-200">Loading requirements...</div>
+              ) : selectedProjectRequirements.length === 0 ? (
+                <div className="text-center py-6 text-slate-300 text-[12px] bg-white/60 rounded-xl border-2 border-dashed border-sky-200">No requirements defined for this project.</div>
+              ) : (
+                <div className="border-2 border-sky-200/60 bg-white/80 rounded-2xl overflow-hidden">
+                  <table className="w-full text-[12px]">
+                    <thead className="bg-sky-100/60">
+                      <tr>
+                        {["Item", "Required Qty", "In Stock", "Status"].map((h) => (
+                          <th key={h} className="text-left px-3 py-2 text-[10px] font-black text-slate-400 uppercase tracking-wider border-b border-sky-200/50">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedProjectRequirements.map((req) => {
+                        const invItem = inventory.find((i) => i.id === req.inventoryId);
+                        const hasEnough = invItem ? invItem.qty >= req.requiredQuantity : false;
+                        return (
+                          <tr key={req.id} className="border-b border-sky-100/60 last:border-0 hover:bg-sky-50/40 transition-colors">
+                            <td className="px-3 py-2.5 font-black text-cyan-950">{invItem?.name || `Item #${req.inventoryId}`}</td>
+                            <td className="px-3 py-2.5 text-slate-600 font-bold">{req.requiredQuantity} {invItem?.unit || "pcs"}</td>
+                            <td className={`px-3 py-2.5 font-bold ${hasEnough ? "text-teal-600" : "text-red-500"}`}>{invItem?.qty ?? "?"} {invItem?.unit || "pcs"}</td>
+                            <td className="px-3 py-2.5">
+                              <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${hasEnough ? "bg-teal-100 text-teal-700" : "bg-red-100 text-red-600"}`}>
+                                {hasEnough ? "✅ Available" : "⚠️ Low Stock"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Related experiments */}
+            <div>
+              <div className="text-[13px] font-black text-cyan-950 mb-2">🔬 Experiments</div>
+              {(() => {
+                const projExps = experiments.filter((e) => e.projectId === selectedProject.id);
+                if (projExps.length === 0) return <div className="text-center py-4 text-slate-300 text-[12px] bg-white/60 rounded-xl border-2 border-dashed border-sky-200">No experiments logged for this project.</div>;
+                return (
+                  <div className="flex flex-col gap-2">
+                    {projExps.slice(0, 5).map((exp) => (
+                      <div key={exp.id} className={`flex items-start gap-3 border-2 rounded-xl px-3 py-2.5 ${exp.success ? "border-teal-200 bg-teal-50/40" : "border-red-200 bg-red-50/30"}`}>
+                        <span className="text-base">{exp.success ? "✅" : "❌"}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-[12px] font-bold text-cyan-950 truncate">{exp.result || "No result recorded"}</div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">{new Date(exp.createdAt).toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "numeric" })}</div>
+                        </div>
+                      </div>
+                    ))}
+                    {projExps.length > 5 && <div className="text-center text-[11px] text-slate-400 font-bold">+{projExps.length - 5} more experiments</div>}
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button onClick={() => cycleProjectStatus(selectedProject.id).then(() => setModal(null))} className="flex-1 py-2.5 rounded-xl bg-sky-100 border-2 border-sky-200 text-sky-700 text-sm font-black hover:bg-sky-200">
+                Next Status →
+              </button>
+              <button onClick={() => setModal(null)} className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-sky-300 to-teal-400 text-cyan-950 text-sm font-black hover:opacity-90">
+                Close
+              </button>
+            </div>
           </div>
         </Modal>
       )}
@@ -649,7 +859,7 @@ export default function App() {
       )}
 
       {modal === "experiment" && (
-        <Modal title="🔬 Log Experiment" onClose={() => setModal(null)}>
+        <Modal title="🔬 Log Experiment" onClose={() => setModal(null)} wide>
           <MField label="Project">
             <select className={selectCls} value={modalForm.projectId} onChange={(e) => setModalForm({ ...modalForm, projectId: e.target.value })}>
               <option value="">— No project —</option>
@@ -664,27 +874,67 @@ export default function App() {
               <option value="false">❌ Failed</option>
             </select>
           </MField>
+
+          {/* Used Resources Section */}
+          <div className="mb-3">
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-wider">🧪 Resources Used</label>
+              <button
+                onClick={addUsedResourceRow}
+                className="text-[10px] font-black bg-rose-100 border-2 border-rose-200 text-rose-700 px-2.5 py-1 rounded-lg hover:bg-rose-200 transition-colors"
+              >+ Add Resource</button>
+            </div>
+            {usedResourceRows.length === 0 ? (
+              <div className="text-center py-4 text-slate-300 text-[11px] border-2 border-dashed border-sky-200 rounded-xl">
+                No resources used — tap "+ Add Resource" to log inventory consumption
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {usedResourceRows.map((row, i) => {
+                  const selectedItem = inventory.find((inv) => inv.id === row.inventoryId);
+                  return (
+                    <div key={i} className="flex flex-col gap-1.5 bg-rose-50/50 border-2 border-rose-200/60 rounded-xl px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <select
+                          className="flex-1 bg-white border-2 border-sky-200 rounded-lg px-2 py-1.5 text-[12px] text-cyan-950 font-semibold outline-none cursor-pointer focus:border-teal-400"
+                          value={row.inventoryId}
+                          onChange={(e) => updateUsedResourceRow(i, "inventoryId", Number(e.target.value))}
+                        >
+                          {inventory.map((inv) => (
+                            <option key={inv.id} value={inv.id}>{inv.name} ({inv.unit}) — stock: {inv.qty}</option>
+                          ))}
+                        </select>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <input
+                            type="number"
+                            min={1}
+                            className="w-20 bg-white border-2 border-sky-200 rounded-lg px-2 py-1.5 text-[12px] text-cyan-950 font-semibold outline-none focus:border-teal-400 text-center"
+                            value={row.quantity}
+                            onChange={(e) => updateUsedResourceRow(i, "quantity", Number(e.target.value))}
+                          />
+                          <span className="text-[10px] text-slate-400 font-black">{selectedItem?.unit || "pcs"}</span>
+                        </div>
+                        <button onClick={() => removeUsedResourceRow(i)} className="text-[10px] font-black text-red-400 hover:text-red-600 px-1.5 py-1 rounded-lg hover:bg-red-50 transition-colors flex-shrink-0">✕</button>
+                      </div>
+                      <input
+                        className="w-full bg-white border-2 border-sky-200 rounded-lg px-2 py-1.5 text-[12px] text-cyan-950 font-semibold outline-none focus:border-teal-400 placeholder:text-slate-300"
+                        placeholder="Reason (optional, e.g. coral sample prep)..."
+                        value={row.reason}
+                        onChange={(e) => updateUsedResourceRow(i, "reason", e.target.value)}
+                      />
+                    </div>
+                  );
+                })}
+                <div className="text-[10px] text-slate-400 font-bold px-1">
+                  ⚠️ These quantities will be <span className="text-red-500">subtracted</span> from inventory and logged as transactions.
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="flex gap-2 mt-4">
             <button onClick={() => setModal(null)} className="flex-1 py-2.5 rounded-xl bg-white border-2 border-sky-200 text-slate-400 text-sm font-black hover:bg-sky-50">Cancel</button>
             <button onClick={saveExperiment} className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-sky-300 to-teal-400 text-cyan-950 text-sm font-black hover:opacity-90">Log Experiment</button>
-          </div>
-        </Modal>
-      )}
-
-      {(modal === "exp" || modal === "editExp") && (
-        <Modal title={modal === "editExp" ? "✏️ Edit Experience" : "⭐ Add Experience"} onClose={() => setModal(null)}>
-          <div className="grid grid-cols-[70px_1fr] gap-2">
-            <MField label="Icon"><input className={inputCls} placeholder="⭐" value={modalForm.icon} onChange={(e) => setModalForm({ ...modalForm, icon: e.target.value })} /></MField>
-            <MField label="Title"><input className={inputCls} placeholder="Lab / Company..." value={modalForm.title} onChange={(e) => setModalForm({ ...modalForm, title: e.target.value })} /></MField>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <MField label="Role"><input className={inputCls} placeholder="Lead Scientist" value={modalForm.role} onChange={(e) => setModalForm({ ...modalForm, role: e.target.value })} /></MField>
-            <MField label="Period"><input className={inputCls} placeholder="2018 – Present" value={modalForm.period} onChange={(e) => setModalForm({ ...modalForm, period: e.target.value })} /></MField>
-          </div>
-          <MField label="Description"><textarea className={`${inputCls} resize-none`} rows={3} placeholder="What did you do here?" value={modalForm.desc} onChange={(e) => setModalForm({ ...modalForm, desc: e.target.value })} /></MField>
-          <div className="flex gap-2 mt-4">
-            <button onClick={() => setModal(null)} className="flex-1 py-2.5 rounded-xl bg-white border-2 border-sky-200 text-slate-400 text-sm font-black hover:bg-sky-50">Cancel</button>
-            <button onClick={modal === "editExp" ? saveEditExp : saveExp} className="flex-1 py-2.5 rounded-xl bg-gradient-to-r from-sky-300 to-teal-400 text-cyan-950 text-sm font-black hover:opacity-90">{modal === "editExp" ? "Save Changes" : "Add Experience"}</button>
           </div>
         </Modal>
       )}
@@ -699,7 +949,6 @@ export default function App() {
             <div className="text-3xl mb-1.5">🔬</div>
             <div className="text-[16px] font-black text-cyan-950 tracking-tight">Sandy's Lab</div>
             <div className="text-[10px] text-teal-500 mt-0.5">Bikini Bottom AI 🌊🫧</div>
-            {/* AI health dot */}
             <div className="flex items-center justify-center gap-1.5 mt-2">
               <span className={`w-2 h-2 rounded-full ${aiOnline===true?"bg-teal-400 shadow-[0_0_6px_rgba(52,211,153,0.8)]":aiOnline===false?"bg-red-400":"bg-slate-300 animate-pulse"}`} />
               <span className="text-[9px] font-bold text-slate-400">{aiOnline===true?"AI Online":aiOnline===false?"AI Offline":"Checking..."}</span>
@@ -733,10 +982,10 @@ export default function App() {
             </button>
             <div className="flex-1 min-w-0">
               <div className="text-[18px] md:text-[20px] font-black text-cyan-950 truncate">
-                {{ dashboard:"🏠 Sandy Command Center", experience:"⭐ Sandy's Experience", projects:"🧪 Research Projects", inventory:"📦 Lab Inventory", experiments:"🔬 Experiments Log", logs:"📋 System Logs" }[page]}
+                {{ dashboard:"🏠 Sandy Command Center", transactions:"📊 Inventory Transactions", projects:"🧪 Research Projects", inventory:"📦 Lab Inventory", experiments:"🔬 Experiments Log", logs:"📋 System Logs" }[page]}
               </div>
               <div className="text-[11px] md:text-[12px] text-slate-500 mt-0.5 hidden sm:block">
-                {{ dashboard:"Treedome AI Agentic Lab System 🌊", experience:"Career & background — managed by Sandy herself 🤠", projects:"Sandy's Research Management", inventory:"Lab Materials CRUD Interface", experiments:"Experiments history & results", logs:"Agent Activity Log" }[page]}
+                {{ dashboard:"Treedome AI Agentic Lab System 🌊", transactions:"Full history of stock movements & changes 📊", projects:"Sandy's Research Management", inventory:"Lab Materials CRUD Interface", experiments:"Experiments history & results", logs:"Agent Activity Log" }[page]}
               </div>
             </div>
             <div className="pointer-events-none hidden md:flex items-center gap-2 pr-1">
@@ -810,6 +1059,30 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* ── AI Result (moved right after prompt, no section between) ── */}
+                {resultText && (
+                  <div className="rounded-2xl border-2 border-teal-300/70 bg-teal-50/60 backdrop-blur p-4 md:p-5 mb-4 md:mb-5 shadow-sm">
+                    <div className="flex items-center justify-between gap-2.5 mb-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-xl">🏆</span>
+                        <span className="text-[15px] font-black text-teal-700">AI System Result</span>
+                      </div>
+                      <button
+                        onClick={() => setResultExpanded((v) => !v)}
+                        className="text-[10px] font-black bg-teal-100 border border-teal-200 text-teal-700 px-3 py-1 rounded-full hover:bg-teal-200 transition-colors"
+                      >
+                        {resultExpanded ? "Show less ▲" : "Show more ▼"}
+                      </button>
+                    </div>
+                    <div className={`overflow-hidden transition-all duration-300 ${resultExpanded ? "max-h-[800px]" : "max-h-[72px]"}`}>
+                      <pre className="text-[13px] text-cyan-950/80 leading-relaxed whitespace-pre-wrap font-[Quicksand,sans-serif]">{resultText}</pre>
+                    </div>
+                    {!resultExpanded && resultText.length > RESULT_PREVIEW_LEN && (
+                      <div className="mt-1 h-6 bg-gradient-to-t from-teal-50/80 to-transparent pointer-events-none -mb-1" />
+                    )}
+                  </div>
+                )}
+
                 {/* Quick actions + DB health */}
                 <div className="grid grid-cols-1 md:grid-cols-[1.35fr_1fr] gap-3 md:gap-4 mb-4 md:mb-5">
                   <div className="rounded-2xl md:rounded-3xl border-2 border-sky-200/60 bg-white/70 backdrop-blur-md p-4 md:p-5 shadow-sm overflow-hidden relative">
@@ -824,7 +1097,7 @@ export default function App() {
                           { label:"Scan coral research", icon:"🪸", action: () => handleRun("Search for coral bleaching solutions and summarize practical lab ideas") },
                           { label:"Log experiment",      icon:"🔬", action: openExpModal },
                           { label:"Restock lows",        icon:"🥜", action: restockLowInventory },
-                          { label:"Add experience",      icon:"🤠", action: openExpirenceModal },
+                          { label:"View transactions",   icon:"📊", action: () => handleNavClick("transactions") },
                         ].map((a) => (
                           <button key={a.label} onClick={a.action} disabled={running && a.label==="Scan coral research"} className="group rounded-2xl border-2 border-sky-200/50 bg-sky-50/60 px-3 py-3 text-left transition-all hover:-translate-y-0.5 hover:border-teal-400/60 hover:bg-white/70 disabled:opacity-50 disabled:hover:translate-y-0">
                             <div className="text-xl mb-1">{a.icon}</div>
@@ -851,13 +1124,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {resultText && (
-                  <div className="rounded-2xl border-2 border-teal-300/70 bg-teal-50/60 backdrop-blur p-4 md:p-5 mb-4 md:mb-5">
-                    <div className="flex items-center gap-2.5 mb-2.5"><span className="text-lg">🏆</span><span className="text-[14px] font-black text-teal-700">AI System Result</span></div>
-                    <p className="text-[13px] text-cyan-950/80 leading-relaxed">{resultText}</p>
-                  </div>
-                )}
-
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-[14px] md:text-[15px] font-black text-cyan-950 flex items-center gap-2">
                     <span className="w-2.5 h-2.5 rounded-full bg-teal-400 border-2 border-white shadow-sm" />Agent Status
@@ -869,51 +1135,90 @@ export default function App() {
               </>
             )}
 
-            {/* ── EXPERIENCE ────────────────────────────────────────────────── */}
-            {page === "experience" && (
+            {/* ── INVENTORY TRANSACTIONS ────────────────────────────────────── */}
+            {page === "transactions" && (
               <>
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
                   <div className="text-[14px] md:text-[15px] font-black text-cyan-950 flex items-center gap-2 flex-wrap">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 border-2 border-white shadow-sm" />Sandy's Career & Experience
-                    <span className="text-[10px] font-bold text-slate-400">({experiences.length} entries)</span>
+                    <span className="w-2.5 h-2.5 rounded-full bg-sky-400 border-2 border-white shadow-sm" />Inventory Transactions
+                    <span className="text-[10px] font-bold text-slate-400">({filteredTransactions.length} of {transactions.length})</span>
+                    {loadingTransactions && <Spinner />}
                   </div>
-                  <button onClick={openExpirenceModal} className="bg-gradient-to-r from-sky-300 to-teal-400 border-2 border-white/50 rounded-xl px-3.5 py-1.5 text-cyan-950 text-[12px] font-black hover:opacity-90 shadow-md">+ Add Experience</button>
+                  <button onClick={fetchTransactions} className="bg-white border-2 border-sky-200 rounded-xl px-3 py-1.5 text-slate-500 text-[12px] font-black hover:bg-sky-50">↻ Refresh</button>
                 </div>
-                <div className="border-2 border-sky-200/60 rounded-2xl p-4 md:p-5 mb-5 flex items-start md:items-center gap-3 md:gap-4 shadow-md" style={{ background: "linear-gradient(135deg,rgba(186,230,255,.5),rgba(167,243,208,.4),rgba(253,230,138,.3))" }}>
-                  <div className="w-14 h-14 md:w-16 md:h-16 flex-shrink-0 rounded-full flex items-center justify-center text-2xl md:text-3xl shadow-md border-2 border-white/80" style={{ background: "linear-gradient(135deg,#fbbf24,#fde68a)" }}>🤠</div>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[15px] md:text-[16px] font-black text-cyan-950">Sandy Cheeks — Squirrel Scientist 🌟</div>
-                    <div className="text-[11px] md:text-[12px] text-slate-500 mt-1 leading-relaxed">Born in Texas, moved to Bikini Bottom. Marine biologist, inventor, karate champion, and proud Treedome resident. Running the lab AI system and managing 8 PostgreSQL tables in <span className="font-black text-teal-500">sandy_lab</span>. 🌊🫧</div>
-                    <div className="flex flex-wrap gap-1.5 mt-2">{["🧬 Marine Bio","🥋 Karate","🔬 Research","🤖 AI Systems","🗄️ PostgreSQL"].map(t => <span key={t} className="text-[10px] font-black bg-white/60 border border-sky-200/60 rounded-full px-2 py-0.5 text-slate-500">{t}</span>)}</div>
+
+                {/* Summary stats */}
+                <div className="grid grid-cols-3 gap-2 md:gap-3 mb-4">
+                  {[
+                    { label: "Total Movements", val: transactions.length, icon: "📊", color: "text-cyan-950" },
+                    { label: "Additions", val: transactions.filter((t) => t.changeAmount > 0).length, icon: "📈", color: "text-teal-600" },
+                    { label: "Deductions", val: transactions.filter((t) => t.changeAmount < 0).length, icon: "📉", color: "text-red-500" },
+                  ].map((s) => (
+                    <div key={s.label} className="rounded-2xl border-2 border-white/80 bg-white/60 backdrop-blur-md px-3 py-3 shadow-sm">
+                      <div className="text-base mb-1">{s.icon}</div>
+                      <div className="text-[9px] font-black text-slate-400 uppercase tracking-wider mb-0.5">{s.label}</div>
+                      <div className={`text-xl font-black ${s.color}`}>{loadingTransactions ? "…" : s.val}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Search */}
+                <div className="bg-white/60 backdrop-blur-md border-2 border-sky-200/60 rounded-2xl p-3 mb-4 flex flex-wrap gap-2 items-center shadow-sm">
+                  <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider px-1">🔎 Search:</span>
+                  <input
+                    placeholder="Search by item name or reason..."
+                    value={txSearch}
+                    onChange={(e) => setTxSearch(e.target.value)}
+                    className="flex-1 min-w-[180px] bg-sky-50/60 border-2 border-sky-200/60 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-cyan-950 outline-none focus:border-teal-400 placeholder:text-slate-300"
+                  />
+                  {txSearch && <button onClick={() => setTxSearch("")} className="bg-white border-2 border-sky-200 rounded-lg px-2.5 py-1.5 text-[11px] font-black text-slate-400 hover:bg-sky-50">✕ Clear</button>}
+                </div>
+
+                {loadingTransactions && transactions.length === 0 ? (
+                  <div className="text-center py-14 text-slate-400 text-sm font-bold bg-white/50 rounded-2xl border-2 border-dashed border-sky-200 flex items-center justify-center gap-2"><Spinner /> Loading transactions...</div>
+                ) : transactions.length === 0 ? (
+                  <div className="text-center py-14 text-slate-400 text-sm font-bold bg-white/50 rounded-2xl border-2 border-dashed border-sky-200">📊 No transactions recorded yet — add some inventory movements 🫧</div>
+                ) : (
+                  <div className="border-2 border-sky-200/60 bg-white/80 backdrop-blur-md rounded-2xl overflow-hidden shadow-sm overflow-x-auto">
+                    <table className="w-full text-[12px] border-collapse min-w-[560px]">
+                      <thead className="bg-sky-100/60">
+                        <tr>
+                          {["#", "Item", "Change", "Reason", "Experiment", "Date"].map((h) => (
+                            <th key={h} className="text-left px-3 md:px-4 py-2.5 text-[10px] font-black text-slate-400 uppercase tracking-wider border-b-2 border-sky-200/50">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredTransactions.map((tx) => {
+                          const invItem = inventory.find((i) => i.id === tx.inventoryId);
+                          const isPositive = tx.changeAmount > 0;
+                          return (
+                            <tr key={tx.id} className="border-b border-sky-100/60 last:border-0 hover:bg-sky-50/40 transition-colors">
+                              <td className="px-3 md:px-4 py-2.5 text-slate-300 font-bold">#{tx.id}</td>
+                              <td className="px-3 md:px-4 py-2.5 font-black text-cyan-950">{invItem?.name || `Item #${tx.inventoryId}`}
+                                {invItem && <span className="ml-1.5 text-[9px] bg-sky-100 text-sky-600 px-1.5 py-0.5 rounded-full font-black">{invItem.unit}</span>}
+                              </td>
+                              <td className="px-3 md:px-4 py-2.5">
+                                <span className={`font-black text-[13px] ${isPositive ? "text-teal-600" : "text-red-500"}`}>
+                                  {isPositive ? "+" : ""}{tx.changeAmount}
+                                </span>
+                              </td>
+                              <td className="px-3 md:px-4 py-2.5 text-slate-500 max-w-[160px] truncate">{tx.reason || <span className="text-slate-300 italic">—</span>}</td>
+                              <td className="px-3 md:px-4 py-2.5">
+                                {tx.experimentId
+                                  ? <span className="text-[9px] font-black bg-rose-100 text-rose-600 px-1.5 py-0.5 rounded-full">Exp #{tx.experimentId}</span>
+                                  : <span className="text-slate-300">—</span>}
+                              </td>
+                              <td className="px-3 md:px-4 py-2.5 text-slate-400 text-[11px] whitespace-nowrap">
+                                {new Date(tx.createdAt).toLocaleString("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
                   </div>
-                </div>
-                <div className="relative pl-8 md:pl-10">
-                  <div className="absolute left-3 md:left-4 top-2 bottom-2 w-0.5 rounded-full" style={{ background: "linear-gradient(180deg,#fbbf24,#7dd3fc,#2dd4bf)" }} />
-                  <div className="flex flex-col gap-4">
-                    {experiences.length === 0 ? <div className="text-center py-14 text-slate-400 text-sm font-bold bg-white/50 rounded-2xl border-2 border-dashed border-sky-200">⭐ No experiences yet 🫧</div>
-                    : experiences.map((e) => (
-                      <div key={e.id} className="relative">
-                        <div className="absolute -left-[26px] md:-left-[34px] top-4 w-5 h-5 md:w-6 md:h-6 rounded-full border-2 border-white shadow-md flex items-center justify-center text-xs z-10" style={{ background: "linear-gradient(135deg,#fbbf24,#fde68a)" }}>{e.icon}</div>
-                        <div className="border-2 border-sky-200/60 bg-white/80 backdrop-blur-md rounded-2xl px-4 md:px-5 py-4 hover:border-teal-400/60 hover:shadow-lg transition-all">
-                          <div className="flex items-start gap-3 md:gap-4">
-                            <div className="w-10 h-10 md:w-12 md:h-12 flex-shrink-0 rounded-xl flex items-center justify-center text-xl md:text-2xl border border-sky-200/50" style={{ background: "linear-gradient(135deg,rgba(186,230,255,.5),rgba(167,243,208,.5))" }}>{e.icon}</div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-start justify-between gap-2 flex-wrap">
-                                <div><div className="text-[14px] md:text-[15px] font-black text-cyan-950">{e.title}</div><div className="text-[11px] md:text-[12px] font-bold text-teal-500 mt-0.5">{e.role}</div></div>
-                                <span className="text-[10px] font-black bg-amber-100 text-amber-600 px-2 md:px-2.5 py-1 rounded-full whitespace-nowrap border border-amber-200">📅 {e.period}</span>
-                              </div>
-                              <p className="text-[12px] text-slate-500 mt-2 leading-relaxed">{e.desc}</p>
-                              <div className="flex gap-2 mt-3">
-                                <button onClick={() => openEditExp(e)} className="text-[10px] font-black bg-sky-100 border-2 border-teal-300/60 text-cyan-950 px-2.5 py-1 rounded-lg hover:bg-sky-200 transition-colors">✏️ Edit</button>
-                                <button onClick={() => deleteExp(e.id)} className="text-[10px] font-black bg-red-100 border-2 border-red-200 text-red-600 px-2.5 py-1 rounded-lg hover:bg-red-200 transition-colors">🗑️ Delete</button>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                )}
               </>
             )}
 
@@ -944,14 +1249,18 @@ export default function App() {
                   ) : filteredProjects.length === 0 ? (
                     <div className="text-center py-14 text-slate-400 text-sm font-bold bg-white/50 rounded-2xl border-2 border-dashed border-sky-200">🔍 No projects match your filters 🫧</div>
                   ) : filteredProjects.map((p) => (
-                    <div key={p.id} className="flex items-center gap-2 md:gap-3 border-2 border-sky-200/50 bg-white/80 backdrop-blur-md rounded-2xl px-3 md:px-4 py-3 md:py-3.5 hover:border-teal-400/60 hover:shadow-md transition-all">
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-2 md:gap-3 border-2 border-sky-200/50 bg-white/80 backdrop-blur-md rounded-2xl px-3 md:px-4 py-3 md:py-3.5 hover:border-teal-400/60 hover:shadow-md transition-all cursor-pointer"
+                      onClick={() => openProjectDetail(p)}
+                    >
                       <div className="w-9 h-9 md:w-10 md:h-10 flex-shrink-0 rounded-xl flex items-center justify-center text-lg border border-sky-200/50" style={{ background: "linear-gradient(135deg,rgba(186,230,255,.5),rgba(167,243,208,.5))" }}>{p.icon}</div>
                       <div className="flex-1 min-w-0">
                         <div className="text-[13px] font-black text-cyan-950 truncate">{p.name}</div>
                         <div className="text-[11px] text-slate-400 mt-0.5 hidden sm:block truncate">{p.desc}</div>
                       </div>
                       <PriBadge priority={p.priority} /><StBadge status={p.status} />
-                      <div className="flex gap-1 md:gap-1.5 flex-shrink-0">
+                      <div className="flex gap-1 md:gap-1.5 flex-shrink-0" onClick={(e) => e.stopPropagation()}>
                         <button onClick={() => cycleProjectStatus(p.id)} className="text-[10px] font-black bg-sky-100 border-2 border-teal-300/50 text-cyan-950 px-2 py-1 rounded-lg hover:bg-sky-200 transition-colors">Next</button>
                         <button onClick={() => deleteProject(p.id)} className="text-[10px] font-black bg-red-100 border-2 border-red-200 text-red-600 px-2 py-1 rounded-lg hover:bg-red-200 transition-colors">Del</button>
                       </div>
@@ -991,7 +1300,7 @@ export default function App() {
                     </thead>
                     <tbody>
                       {loadingInventory && inventory.length===0 ? (
-                        <tr><td colSpan={7} className="text-center py-10 text-slate-400 font-bold flex items-center justify-center gap-2"><Spinner /> Loading...</td></tr>
+                        <tr><td colSpan={7} className="text-center py-10 text-slate-400 font-bold"><Spinner /></td></tr>
                       ) : filteredInventory.length===0 ? (
                         <tr><td colSpan={7} className="text-center py-10 text-slate-400 font-bold">🔍 No items match your filters 🫧</td></tr>
                       ) : filteredInventory.map((item) => {
@@ -1078,7 +1387,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Agent Tasks from DB */}
                 {aiTasks.length > 0 && (
                   <div className="border-2 border-sky-200/60 bg-white/70 backdrop-blur-md rounded-2xl p-4 mb-4 shadow-sm">
                     <div className="text-[13px] font-black text-cyan-950 mb-3 flex items-center gap-2">🗄️ Agent Tasks (DB) <span className="text-[10px] font-bold text-slate-400">agent_tasks table</span></div>
@@ -1094,7 +1402,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Activity log */}
                 <div className="border-2 border-sky-200/60 bg-white/80 backdrop-blur-md rounded-2xl p-4 shadow-sm">
                   <div className="flex flex-col">
                     {[...logs].reverse().map((l) => (
