@@ -2,6 +2,8 @@ version: '3.8'
 name: codeitup-sandy-lab
 
 services:
+
+  # ─── Base de données PostgreSQL ───────────────────────────────────────────
   sandy-db:
     image: all4n1/codeitup-postgres:latest
     container_name: codeitup-sandy-lab
@@ -16,7 +18,13 @@ services:
     networks:
       - codeitup-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sandy -d sandy_lab"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
+  # ─── pgAdmin ──────────────────────────────────────────────────────────────
   pgadmin:
     image: dpage/pgadmin4
     container_name: codeitup-pgadmin
@@ -33,33 +41,54 @@ services:
       - codeitup-network
     restart: unless-stopped
 
+  # ─── Backend NestJS ───────────────────────────────────────────────────────
   sandy-backend:
-    build: ./sandy-lab-backend          # chemin vers ton dossier backend (où se trouve le Dockerfile)
+    build: ./sandy-lab-backend
     container_name: codeitup-sandy-backend
     ports:
-      - "3000:3000"                 # expose ton API sur localhost:3000
+      - "3000:3000"
     environment:
-      # Ces variables seront lues par NestJS (via @nestjs/config ou process.env)
       NODE_ENV: development
-      DB_HOST: sandy-db             # nom du service PostgreSQL
-      DB_PORT: 5432                 # port interne du conteneur PostgreSQL
+      DB_HOST: sandy-db       # ← réseau interne Docker
+      DB_PORT: 5432           # ← port interne (pas 5433)
       DB_USER: sandy
       DB_PASSWORD: sandy123
       DB_NAME: sandy_lab
-      # Si tu utilises TypeORM, tu peux passer l'URL complète
-      DATABASE_URL: postgresql://sandy:sandy123@sandy-db:5432/sandy_lab
     depends_on:
-      - sandy-db
+      sandy-db:
+        condition: service_healthy
     networks:
       - codeitup-network
     restart: unless-stopped
 
+  # ─── AI Service FastAPI ───────────────────────────────────────────────────
+  sandy-ai:
+    build: ./ai-service
+    container_name: codeitup-sandy-ai
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./ai-service/.env       # charge ton .env (GROQ_API_KEY, etc.)
+    environment:
+      # Ces variables ÉCRASENT celles du .env uniquement dans Docker
+      DB_HOST: sandy-db         # ← remplace "localhost" du .env
+      DB_PORT: 5432             # ← remplace "5433" du .env
+      NESTJS_URL: http://sandy-backend:3000
+    depends_on:
+      sandy-db:
+        condition: service_healthy
+    networks:
+      - codeitup-network
+    restart: unless-stopped
+
+# ─── Volumes ──────────────────────────────────────────────────────────────────
 volumes:
   sandy-db-data:
     name: codeitup-sandy-db-data
   pgadmin-data:
     name: codeitup-pgadmin-data
 
+# ─── Réseau ───────────────────────────────────────────────────────────────────
 networks:
   codeitup-network:
     driver: bridge
